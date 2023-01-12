@@ -70,6 +70,9 @@ public class Redisson implements RedissonClient {
         if (config.isReferenceEnabled()) {
             objectBuilder = new RedissonObjectBuilder(this);
         }
+        /**
+         * 创建命令行处理器
+         */
         commandExecutor = new CommandSyncService(connectionManager, objectBuilder);
         evictionScheduler = new EvictionScheduler(commandExecutor);
         writeBehindService = new WriteBehindService(commandExecutor);

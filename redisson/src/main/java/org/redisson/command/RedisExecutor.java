@@ -108,11 +108,13 @@ public class RedisExecutor<V, R> {
     }
 
     public void execute() {
+        // 任务是否取消
         if (mainPromise.isCancelled()) {
             free();
             return;
         }
 
+        // 判断Redisson是否关闭
         if (!connectionManager.getShutdownLatch().acquire()) {
             free();
             mainPromise.completeExceptionally(new RedissonShutdownException("Redisson is shutdown"));
@@ -128,6 +130,7 @@ public class RedisExecutor<V, R> {
             if (mainPromise.isCancelled() && connectionFuture.cancel(false)) {
                 log.debug("Connection obtaining canceled for {}", command);
                 timeout.ifPresent(Timeout::cancel);
+                // 撤销没有运行正在运行的任务
                 if (attemptPromise.cancel(false)) {
                     free();
                 }
@@ -137,30 +140,37 @@ public class RedisExecutor<V, R> {
         if (attempt == 0) {
             mainPromise.whenComplete((r, e) -> {
                 if (this.mainPromiseListener != null) {
+                    // 返回结果
                     this.mainPromiseListener.accept(r, e);
                 }
             });
         }
 
+        // 重试任务
         scheduleRetryTimeout(connectionFuture, attemptPromise);
 
+        // 连接超时任务
         scheduleConnectionTimeout(attemptPromise, connectionFuture);
 
         connectionFuture.whenComplete((connection, e) -> {
+            // 任务撤销 释放ShutdownLatch资源
             if (connectionFuture.isCancelled()) {
                 connectionManager.getShutdownLatch().release();
                 return;
             }
 
+            // 发生异常
             if (connectionFuture.isDone() && connectionFuture.isCompletedExceptionally()) {
                 connectionManager.getShutdownLatch().release();
                 exception = convertException(connectionFuture);
+                // 取消重试
                 if (attempt == attempts) {
                     attemptPromise.completeExceptionally(exception);
                 }
                 return;
             }
 
+            // 执行命令
             sendCommand(attemptPromise, connection);
 
             scheduleWriteTimeout(attemptPromise);
@@ -309,6 +319,7 @@ public class RedisExecutor<V, R> {
     
     protected void free(Object[] params) {
         for (Object obj : params) {
+            // 释放 避免堆外内存不能释放导致内存泄露
             ReferenceCountUtil.safeRelease(obj);
         }
     }
@@ -571,6 +582,7 @@ public class RedisExecutor<V, R> {
     }
 
     protected void sendCommand(CompletableFuture<R> attemptPromise, RedisConnection connection) {
+        // TODO 看不懂
         if (source.getRedirect() == Redirect.ASK) {
             List<CommandData<?, ?>> list = new ArrayList<>(2);
             CompletableFuture<Void> promise = new CompletableFuture<>();
@@ -652,10 +664,12 @@ public class RedisExecutor<V, R> {
             return null;
         }
 
+        // 是否使用线程类加载器
         if (!connectionManager.getCfg().isUseThreadClassLoader()) {
             return codec;
         }
 
+        // 跳过白名单
         for (Class<?> clazz : BaseCodec.SKIPPED_CODECS) {
             if (clazz.isAssignableFrom(codec.getClass())) {
                 return codec;
@@ -664,11 +678,14 @@ public class RedisExecutor<V, R> {
 
         Codec codecToUse = codec;
         ClassLoader threadClassLoader = Thread.currentThread().getContextClassLoader();
+        //TODO 使用线程的类加载器是在考虑什么?
         if (threadClassLoader != null) {
+            // KEY 原类加载器加载出来的, VALUE 本线程加载的类
             Map<Codec, Codec> map = CODECS.computeIfAbsent(threadClassLoader, k ->
                                             new LRUCacheMap<>(200, 0, 0));
             codecToUse = map.get(codec);
             if (codecToUse == null) {
+                // 使用线程类加载器加载Codec
                 try {
                     codecToUse = codec.getClass().getConstructor(ClassLoader.class, codec.getClass()).newInstance(threadClassLoader, codec);
                 } catch (NoSuchMethodException e) {

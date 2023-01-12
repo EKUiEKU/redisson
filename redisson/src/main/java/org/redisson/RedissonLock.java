@@ -173,6 +173,7 @@ public class RedissonLock extends RedissonBaseLock {
         if (leaseTime > 0) {
             ttlRemainingFuture = tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         } else {
+            // 默认持有30秒
             ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
                     TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         }
@@ -197,12 +198,17 @@ public class RedissonLock extends RedissonBaseLock {
 
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+                // 如果这个锁的key不存在 或者这个线程已经有锁了
                 "if ((redis.call('exists', KEYS[1]) == 0) " +
                             "or (redis.call('hexists', KEYS[1], ARGV[2]) == 1)) then " +
+                        // 如果key不存在则 变成1, 如果存在则加1(可重入锁)
                         "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                        // 过期时间
                         "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                        // 返回空 则上锁成功
                         "return nil; " +
                     "end; " +
+                        // 返回别人持有锁距离过期的时间
                     "return redis.call('pttl', KEYS[1]);",
                 Collections.singletonList(getRawName()), unit.toMillis(leaseTime), getLockName(threadId));
     }
@@ -212,6 +218,7 @@ public class RedissonLock extends RedissonBaseLock {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         long threadId = Thread.currentThread().getId();
+        // 尝试获取锁
         Long ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {

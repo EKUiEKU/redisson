@@ -205,23 +205,40 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         }
     }
 
+    /**
+     * 异步执行lua脚本
+     * @param key 锁名称
+     * @param codec 入参和返回结果解码器
+     * @param evalCommandType 命令类型
+     * @param script    lua脚本
+     * @param keys  key值
+     * @param params    参数
+     * @return  返回结果
+     * @param <T>
+     */
     protected <T> RFuture<T> evalWriteAsync(String key, Codec codec, RedisCommand<T> evalCommandType, String script, List<Object> keys, Object... params) {
         MasterSlaveEntry entry = commandExecutor.getConnectionManager().getEntry(getRawName());
 
         CompletionStage<Map<String, String>> replicationFuture = CompletableFuture.completedFuture(Collections.emptyMap());
+        // 不是批量命令 并且有空档和节点可以执行
         if (!(commandExecutor instanceof CommandBatchService) && entry != null && entry.getAvailableSlaves() > 0) {
             replicationFuture = commandExecutor.writeAsync(entry, null, RedisCommands.INFO_REPLICATION);
         }
         CompletionStage<T> resFuture = replicationFuture.thenCompose(r -> {
+            // 获取已连接的节点
             Integer availableSlaves = Integer.valueOf(r.getOrDefault("connected_slaves", "0"));
 
+            // 创建批量服务 猜想：要把批量的服务平均分摊给节点
             CommandBatchService executorService = createCommandBatchService(availableSlaves);
+            // 执行命令
             RFuture<T> result = executorService.evalWriteAsync(key, codec, evalCommandType, script, keys, params);
             if (commandExecutor instanceof CommandBatchService) {
                 return result;
             }
 
+            // 执行异步线程
             RFuture<BatchResult<?>> future = executorService.executeAsync();
+
             CompletionStage<T> f = future.handle((res, ex) -> {
                 if (ex != null) {
                     throw new CompletionException(ex);
